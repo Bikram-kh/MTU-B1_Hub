@@ -431,6 +431,10 @@
                     <button class="btn" id="annPostBtn">Post Announcement</button>
                 </div>
 
+                <div id="announcementNotice" class="empty-state" style="display:none; padding: 16px 20px; margin-bottom: 20px; color: #4a5568; background: #f7fafc; border: 1px solid #e2e8f0; border-radius: 12px;">
+                    Only admins can post announcements. If you need something shared, ask your class admin to post it here.
+                </div>
+
                 <div id="announcementsContainer">
                     <p>Loading announcements...</p>
                 </div>
@@ -467,17 +471,37 @@
         const provider = new GoogleAuthProvider();
 
         const ALLOWED_DOMAIN = "@mtu.ac.in"; // Change to your school domain
-        // Add more admin emails here. Example: "teacher2@mtu.ac.in"
-        const ADMIN_EMAILS = [
+        let ADMIN_EMAILS = [
             "bikram_kh26@mtu.ac.in",
             "rildam_s26@mtu.ac.in",
             "inunganba_k26@mtu.ac.in"
         ];
+        const adminConfigRef = doc(db, "app_config", "admins");
+        let adminEmailsLoaded = false;
+
+        async function loadAdminEmails() {
+            if (adminEmailsLoaded) return;
+            try {
+                const snapshot = await getDoc(adminConfigRef);
+                if (snapshot.exists()) {
+                    const data = snapshot.data();
+                    if (Array.isArray(data.emails)) {
+                        ADMIN_EMAILS = data.emails
+                            .map(email => String(email).trim())
+                            .filter(email => email.length > 0);
+                    }
+                }
+            } catch (err) {
+                console.error("Failed to load admin emails from Firestore:", err);
+            }
+            adminEmailsLoaded = true;
+            console.log("Loaded admin emails:", ADMIN_EMAILS);
+        }
 
         function isAdminEmail(email) {
             if (!email) return false;
             const normalizedEmail = email.trim().toLowerCase();
-            return ADMIN_EMAILS.some(allowedEmail => allowedEmail.trim().toLowerCase() === normalizedEmail);
+            return ADMIN_EMAILS.some(allowedEmail => allowedEmail === normalizedEmail);
         }
 
         // Edit this list to match your semester's subjects
@@ -492,6 +516,11 @@
         const adminBadgeContainer = document.getElementById('adminBadgeContainer');
         const noteSubject = document.getElementById('noteSubject');
         const subjectFilter = document.getElementById('subjectFilter');
+        const announcementForm = document.getElementById('announceAdminForm');
+        const announcementNotice = document.getElementById('announcementNotice');
+        const announcementsContainer = document.getElementById('announcementsContainer');
+        const annTitleInput = document.getElementById('annTitle');
+        const annBodyInput = document.getElementById('annBody');
 
         let isAdmin = false;
         let currentSubjectFilter = "All";
@@ -516,14 +545,24 @@
         });
 
         // ---------------- AUTH ----------------
-        onAuthStateChanged(auth, (user) => {
+        function updateAdminUI() {
+            adminBadgeContainer.innerHTML = isAdmin ? '<span class="admin-badge">ADMIN</span>' : '';
+            announcementForm.style.display = isAdmin ? 'block' : 'none';
+            announcementNotice.style.display = isAdmin ? 'none' : 'block';
+        }
+
+        onAuthStateChanged(auth, async (user) => {
+            console.log("Auth state changed", user?.email, "adminEmails before load", ADMIN_EMAILS);
             if (user && user.email.endsWith(ALLOWED_DOMAIN)) {
+                await loadAdminEmails();
+                console.log("Admin emails loaded", ADMIN_EMAILS);
+
                 loginScreen.style.display = 'none';
                 dashboardScreen.style.display = 'block';
 
                 isAdmin = isAdminEmail(user.email);
-                adminBadgeContainer.innerHTML = isAdmin ? '<span class="admin-badge">ADMIN</span>' : '';
-                document.getElementById('announceAdminForm').style.display = isAdmin ? 'block' : 'none';
+                console.log("Admin status:", isAdmin);
+                updateAdminUI();
 
                 loadNotes();
                 loadAnnouncements();
@@ -554,18 +593,20 @@
         srcLinkBtn.addEventListener('click', () => {
             uploadMode = 'link';
             srcLinkBtn.classList.add('active');
-            srcFileBtn.classList.remove('active');
+            if (srcFileBtn) srcFileBtn.classList.remove('active');
             noteLinkInput.style.display = 'block';
             noteFileInput.style.display = 'none';
         });
 
-        srcFileBtn.addEventListener('click', () => {
-            uploadMode = 'file';
-            srcFileBtn.classList.add('active');
-            srcLinkBtn.classList.remove('active');
-            noteLinkInput.style.display = 'none';
-            noteFileInput.style.display = 'block';
-        });
+        if (srcFileBtn) {
+            srcFileBtn.addEventListener('click', () => {
+                uploadMode = 'file';
+                srcFileBtn.classList.add('active');
+                srcLinkBtn.classList.remove('active');
+                noteLinkInput.style.display = 'none';
+                noteFileInput.style.display = 'block';
+            });
+        }
 
         // ---------------- UPLOAD NOTE ----------------
         document.getElementById('uploadBtn').addEventListener('click', async () => {
@@ -688,23 +729,42 @@
 
         // ---------------- ANNOUNCEMENTS + COMMENTS ----------------
         document.getElementById('annPostBtn').addEventListener('click', async () => {
-            const title = document.getElementById('annTitle').value.trim();
-            const body = document.getElementById('annBody').value.trim();
+            if (!isAdmin) {
+                alert("Only admins can post announcements.");
+                return;
+            }
+
+            const user = auth.currentUser;
+            if (!user) {
+                alert("Please sign in again before posting.");
+                return;
+            }
+
+            const title = annTitleInput.value.trim();
+            const body = annBodyInput.value.trim();
 
             if (!title || !body) {
                 alert("Please add both a title and a message.");
                 return;
             }
 
-            await addDoc(collection(db, "announcements"), {
-                title, body,
-                author: auth.currentUser.displayName,
-                timestamp: serverTimestamp()
-            });
+            try {
+                await addDoc(collection(db, "announcements"), {
+                    title,
+                    body,
+                    author: user.displayName || user.email || "Admin",
+                    uid: user.uid,
+                    timestamp: serverTimestamp()
+                });
 
-            document.getElementById('annTitle').value = "";
-            document.getElementById('annBody').value = "";
-            loadAnnouncements();
+                annTitleInput.value = "";
+                annBodyInput.value = "";
+                loadAnnouncements();
+            } catch (err) {
+                console.error("Announcement post failed", err);
+                const info = err?.code ? `${err.code}: ${err.message}` : err?.message || String(err);
+                alert(`Unable to post the announcement. ${info}`);
+            }
         });
 
         window.deleteAnnouncement = async function (id) {
@@ -715,18 +775,28 @@
         }
 
         window.postComment = async function (annId) {
+            if (!auth.currentUser) {
+                alert("Please sign in to comment.");
+                return;
+            }
+
             const input = document.getElementById(`comment-input-${annId}`);
             const text = input.value.trim();
             if (!text) return;
 
-            await addDoc(collection(db, "announcements", annId, "comments"), {
-                text,
-                author: auth.currentUser.displayName,
-                uid: auth.currentUser.uid,
-                timestamp: serverTimestamp()
-            });
-            input.value = "";
-            loadAnnouncements();
+            try {
+                await addDoc(collection(db, "announcements", annId, "comments"), {
+                    text,
+                    author: auth.currentUser.displayName || auth.currentUser.email,
+                    uid: auth.currentUser.uid,
+                    timestamp: serverTimestamp()
+                });
+                input.value = "";
+                loadAnnouncements();
+            } catch (err) {
+                console.error(err);
+                alert("Unable to post comment. Please try again.");
+            }
         }
 
         window.deleteComment = async function (annId, commentId) {
